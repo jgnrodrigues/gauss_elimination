@@ -11,28 +11,34 @@
 
 int main(int argc, char const *argv[])
 {
-    if (argc != 3)
+    if (argc != 2)
     {
-         printf("USAGE: ./matrix system_nvar file_name");
+         printf("USAGE: ./matrix file_name");
          return 1;
     }
 
-    int nvar = atoi(argv[1]);
+    FILE *file;
+    file=fopen(argv[1], "r");
+
+    int nvar;
+    if (!fscanf(file, "%d", &nvar))
+    {
+         printf("Can't read file");
+         return 1;
+    }
+
+    printf("%d\n\n",nvar);
 
     if(nvar == 0)
     {
         return 0;
     }
 
-
     int i,j;
 
     /*matrix*/
 
-    double* mat=malloc(sizeof(double)*nvar*(nvar+1));
-
-    FILE *file;
-    file=fopen(argv[2], "r");
+    double* mat=malloc(sizeof(double)*nvar*(nvar+1));    
 
     for(i = 0; i < nvar * (nvar+1); i++)
     {

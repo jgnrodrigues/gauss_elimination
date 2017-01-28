@@ -108,7 +108,7 @@ __global__ void gaussOnGPU(double matrix[], const int n)
             }
             */
             
-            if(k > i) //compute if the idx's line is below of i's line
+            if(k > i) //compute if the k line is below of i line
             {
                 double ratio = matrix[NVAR*k+i]/matrix[NVAR*i+i];
                 matrix[NVAR*k+j] = matrix[NVAR*k+j]-ratio*matrix[NVAR*i+j];       //make the elements below the pivot elements equal to zero or elimnate the variables
@@ -219,7 +219,7 @@ void gauss_gpu(double matrix[], double result[], int n)
     gaussOnGPU<<<grid, block>>>(dev_matrix, n);
     CHECK(cudaGetLastError());
     CHECK(cudaDeviceSynchronize());
-    printf("\ngaussOnGPU<<<%d, %d>>>\n", grid.x * grid.y, block.x * block.y);  
+    printf("\ngaussOnGPU<<<%d, %d>>>: block: %d x %d\n", grid.x * grid.y, block.x * block.y, block.x, block.y);  
 
     // transfer data from device to host
     CHECK(cudaMemcpy(matrix, dev_matrix,matrix_size, cudaMemcpyDeviceToHost));
@@ -248,77 +248,131 @@ void gauss_gpu(double matrix[], double result[], int n)
 
 }
 
+int read_file(const char* fileName,double* matrix, int* n)
+{
+    FILE *file;
+    file=fopen(fileName, "r");
+
+    int nvar;
+    if (!fscanf(file, "%d", &nvar))
+    {
+         fprintf(stderr,"Can't read file");
+         return -1;
+    }
+
+    if(nvar == 0 || nvar != *n)
+    {
+        fprintf(stderr,"Can't read nvar");
+        return -1;
+    }
+
+    int i,j;
+
+    /*matrix*/
+
+    for(i = 0; i < nvar * (nvar+1); i++)
+    {
+        //Use lf format specifier, %c is for character
+        if (!fscanf(file, "%lf", matrix +i )) 
+            break;
+    }
+    /*
+    for(int i = 0; i< nvar; i++)
+    {
+        for (int j = 0; j <= nvar; j++)
+        {
+            if (!fscanf(file, "%lf", &mat[(nvar+1) * i + j])) 
+                break;
+        }
+    }
+    */
+    fclose(file);  
+
+    *n = nvar;
+    return 0;
+}
+
+int verification(double* result_a, double* result_b, int n)
+{
+    int i;
+    for(i = 0; i < n; i++)
+    {
+        if((result_a[i] - result_b[i]) > 1e-14)
+        {
+            printf("Result mismatch:\n");
+            printf("i: %d\tCPU: %f\tGPU: %f    delta:%e", i, result_a[i], result_b[i], result_a[i]-result_b[i]);
+            return -1;
+        }
+            
+    }
+    return 0;
+}
+
 int main(int argc, char const *argv[])
 {
-	int nvar = 4;
+    //read matrix from file
+    if (argc != 3)
+    {
+         printf("USAGE: ./matrix file_name");
+         return 1;
+    }
+
+    int nvar = atoi(argv[2]);
     double* matrix = (double*)calloc((size_t)(nvar*(nvar+1)),(size_t)sizeof(double));
 
-    nvar = 4 + 1;
-    matrix[nvar*0+0] =  4.0;
-    matrix[nvar*0+1] = -3.0;
-    matrix[nvar*0+2] =  0.0;
-    matrix[nvar*0+3] =  1.0;
-    matrix[nvar*0+4] = -7.0;
-
-    matrix[nvar*1+0] =  2.0;
-    matrix[nvar*1+1] =  2.0;
-    matrix[nvar*1+2] =  3.0;
-    matrix[nvar*1+3] =  2.0;
-    matrix[nvar*1+4] = -2.0;
-
-    matrix[nvar*2+0] =  6.0;
-    matrix[nvar*2+1] =  1.0;
-    matrix[nvar*2+2] = -6.0;
-    matrix[nvar*2+3] = -5.0;
-    matrix[nvar*2+4] =  6.0;
-
-    matrix[nvar*3+0] =  0.0;
-    matrix[nvar*3+1] =  2.0;
-    matrix[nvar*3+2] =  0.0;
-    matrix[nvar*3+3] =  1.0;
-    matrix[nvar*3+4] =  0.0;
+    if(read_file(argv[1], matrix, &nvar) != 0)
+    {
+        free(matrix);
+        return -1;
+    }
+    printf("nvar: %d\n", nvar);
     
-    nvar = 4;
-	double result[nvar];
-	/*gauss_cpu(matrix, result, nvar);
+    printf("Initial matrix:\n\n");
+    for(int i = 0; i< nvar; i++)
+    {
+        for (int j = 0; j <= nvar; j++)
+            printf("%.1f\t",matrix[(nvar+1) *i + j]); 
+        printf("\n"); 
+    }
+    //////////////////////////////////////////////////
+
+	double result_a[nvar];
+    double result_b[nvar];
+
+	gauss_cpu(matrix, result_a, nvar);
     printf("\nThe values of the variables are as follows:\n");
     int i;
     for (i=0;i<nvar;i++)
-        printf("%f\n",result[i]);  */
+        printf("%f\n",result_a[i]); 
+
+    
     printf("\nGPU\n");
-    
-    nvar = 4 + 1;
-    matrix[nvar*0+0] =  4.0;
-    matrix[nvar*0+1] = -3.0;
-    matrix[nvar*0+2] =  0.0;
-    matrix[nvar*0+3] =  1.0;
-    matrix[nvar*0+4] = -7.0;
 
-    matrix[nvar*1+0] =  2.0;
-    matrix[nvar*1+1] =  2.0;
-    matrix[nvar*1+2] =  3.0;
-    matrix[nvar*1+3] =  2.0;
-    matrix[nvar*1+4] = -2.0;
+    if(read_file(argv[1], matrix, &nvar) != 0)
+    {
+        free(matrix);
+        return -1;
+    }
 
-    matrix[nvar*2+0] =  6.0;
-    matrix[nvar*2+1] =  1.0;
-    matrix[nvar*2+2] = -6.0;
-    matrix[nvar*2+3] = -5.0;
-    matrix[nvar*2+4] =  6.0;
-
-    matrix[nvar*3+0] =  0.0;
-    matrix[nvar*3+1] =  2.0;
-    matrix[nvar*3+2] =  0.0;
-    matrix[nvar*3+3] =  1.0;
-    matrix[nvar*3+4] =  0.0;
-
-    nvar = 4;
-    gauss_gpu(matrix, result, nvar);
+    gauss_gpu(matrix, result_b, nvar);
     printf("\nThe values of the variables are as follows:\n");
-    int i;
+    //int i;
     for (i=0;i<nvar;i++)
-        printf("%f\n",result[i]);
+        printf("%f\n",result_b[i]);   
+    
+    printf("\n***********************\n");
+    if (verification(result_a, result_b, nvar) != 0)
+    {
+        /*printf("Result mismatch:\n");
+        for(i = 0; i < nvar; i++)
+        {
+            printf("CPU: %f\tGPU: %f\n", result_a[i], result_b[i]);
+        }*/
+        free(matrix);
+	    return -1;
+    }
 
+    printf("OK");
     free(matrix);
 	return 0;
 }
