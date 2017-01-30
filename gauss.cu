@@ -148,6 +148,39 @@ __global__ void gaussOnGPU(double matrix[], const int n)
     }
 }
 
+__global__ void backSubstitutionOnGPU(double matrix[], double result[], const int n)  //PROBLEMS
+{
+    /*
+    for (i=n-1;i>=0;i--)                //back-substitution
+    {                        
+        result[i]=matrix[nvar*i+n];                //make the variable to be calculated equal to the rhs of the last equation
+        for (j=0;j<n;j++)
+            if (j!=i)            //then subtract all the lhs values except the coefficient of the variable whose value is being calculated
+                result[i]=result[i]-matrix[nvar*i+j]*result[j];
+        result[i]=result[i]/matrix[nvar*i+i];            //now finally divide the rhs by the coefficient of the variable to be calculated
+    }
+    */
+    unsigned int ix = threadIdx.x + blockIdx.x * blockDim.x;
+    unsigned int iy = threadIdx.y + blockIdx.y * blockDim.y;
+    unsigned int idx = iy * gridDim.x * blockDim.x + ix;
+    int i,j;
+    int NVAR = n + 1;
+
+    if (idx < (gridDim.x * gridDim.y * blockDim.x * blockDim.y) && idx < n)
+    {
+        result[idx] = matrix[NVAR * idx + n];
+        for(j=0;j<n;j++)
+        {
+            if (j != idx)
+            {
+                result[idx]=result[idx]-matrix[NVAR*idx+j]*result[j];
+            }
+            __syncthreads(); //Synchronizing all threads before next iteration
+        }
+        result[idx]=result[idx]/matrix[NVAR*idx+idx];
+    }
+}
+
 //GPU
 /////////////////////////////////
 // 0 -> independent system
@@ -167,7 +200,7 @@ int gauss_gpu(double matrix[], double result[], int n)
     size_t matrix_size = sizeof(double) * n * (n + 1);
     size_t result_size = sizeof(double) * n;
 
-    if(matrix_size > deviceProp.totalGlobalMem)
+    if(matrix_size + result_size > deviceProp.totalGlobalMem)
     {
         fprintf(stderr,"Not enough memory in the cuda device\n");
         exit(1);
@@ -219,9 +252,10 @@ int gauss_gpu(double matrix[], double result[], int n)
 	}
     */   
 
-    //device memory allocation
-    double *dev_matrix;
+    //device memory allocation    
+    double *dev_matrix, *dev_result;
     CHECK(cudaMalloc((void **)&dev_matrix, matrix_size));
+    CHECK(cudaMalloc((void **)&dev_result, result_size));
 
     // transfer data from host to device
     CHECK(cudaMemcpy(dev_matrix, matrix, matrix_size, cudaMemcpyHostToDevice));
@@ -230,8 +264,8 @@ int gauss_gpu(double matrix[], double result[], int n)
     int block_x = n + 1;
     int block_y = n;
 
-    int grid_x = n + 1;
-    int grid_y = n;
+    int grid_x = 1;
+    int grid_y = 1;
 
     //block size verification
     if(block_x > deviceProp.maxThreadsDim[0] || block_y > deviceProp.maxThreadsDim[1] || block_x * block_y > deviceProp.maxThreadsPerBlock)
@@ -247,8 +281,8 @@ int gauss_gpu(double matrix[], double result[], int n)
         exit(1);
     }
 
-    dim3 block (n + 1, n);
-    dim3 grid  (1);
+    dim3 block (block_x, block_y);
+    dim3 grid  (grid_x, grid_y);
 
     //kernel execution
     gaussOnGPU<<<grid, block>>>(dev_matrix, n);
@@ -260,7 +294,7 @@ int gauss_gpu(double matrix[], double result[], int n)
     CHECK(cudaMemcpy(matrix, dev_matrix,matrix_size, cudaMemcpyDeviceToHost));
 
     //free device memory
-    CHECK(cudaFree(dev_matrix));
+    //CHECK(cudaFree(dev_matrix));
 
     /////////////////////////////
      printf("\n\nThe matrix after gauss-elimination is as follows:\n");
@@ -302,6 +336,57 @@ int gauss_gpu(double matrix[], double result[], int n)
                 result[i]=result[i]-matrix[nvar*i+j]*result[j];
         result[i]=result[i]/matrix[nvar*i+i];            //now finally divide the rhs by the coefficient of the variable to be calculated
     }
+    
+/*
+    //device memory allocation
+    //double *dev_matrix, *dev_result;
+    //CHECK(cudaMalloc((void **)&dev_matrix, matrix_size));
+    //CHECK(cudaMalloc((void **)&dev_result, result_size));
+
+     // transfer data from host to device
+    CHECK(cudaMemcpy(dev_matrix, matrix, matrix_size, cudaMemcpyHostToDevice));
+    CHECK(cudaMemcpy(dev_result, result, result_size, cudaMemcpyHostToDevice));
+
+    // device configurations
+    block_x = 1;
+    block_y = n;
+
+    grid_x = 1;
+    grid_y = 1;
+
+    //block size verification
+    if(block_x > deviceProp.maxThreadsDim[0] || block_y > deviceProp.maxThreadsDim[1] || block_x * block_y > deviceProp.maxThreadsPerBlock)
+    {
+        fprintf(stderr,"Block too big\n");
+        exit(1);
+    }
+
+    //grid size verification
+    if(grid_x > deviceProp.maxGridSize[0] || grid_y > deviceProp.maxGridSize[1])
+    {
+        fprintf(stderr,"Grid too big\n");
+        exit(1);
+    }
+
+    block.x = block_x;
+    block.y = block_y;
+    grid.x = grid.x;
+    grid.y = grid_y;
+
+    //kernel execution
+    backSubstitutionOnGPU<<<grid, block>>>(dev_matrix, dev_result, n);
+    CHECK(cudaGetLastError());
+    CHECK(cudaDeviceSynchronize());
+    printf("\nbackSubstitutionOnGPU<<<%d, %d>>>: block: %d x %d\n", grid.x * grid.y, block.x * block.y, block.x, block.y);
+
+    // transfer data from device to host
+    CHECK(cudaMemcpy(matrix, dev_matrix, matrix_size, cudaMemcpyDeviceToHost));
+    CHECK(cudaMemcpy(result, dev_result, result_size, cudaMemcpyDeviceToHost));
+
+    //free device memory
+    CHECK(cudaFree(dev_matrix));
+    CHECK(cudaFree(dev_result));
+*/
     return 0;
 
 }
