@@ -5,7 +5,7 @@
 //  João Rodrigues
 //  MEC: 71771
 //
-//  algorithm based on http://www.bragitoff.com/2015/09/c-program-for-gauss-elimination-for-solving-a-system-of-linear-equations/
+//  back-substitution algorithm based on http://www.bragitoff.com/2015/09/c-program-for-gauss-elimination-for-solving-a-system-of-linear-equations/
 /////////////////////////////////////////////////////////////////////
 
 #include <stdio.h>
@@ -28,10 +28,11 @@ int gauss_cpu(double matrix[], double result[], int n)
 {
 	int i,j,k;
     int nvar = n + 1;
-	//Pivotisation
-	for (i=0;i<n;i++)
+	
+	for (i = 0; i < n - 1; i++)
 	{                    
-        for (k=i+1;k<n;k++)
+        /*
+        for (k=i+1;k<n;k++)     //Pivotisation biggest
 		{
 			if (matrix[nvar*i+i]<matrix[nvar*k+i])
 			{
@@ -43,33 +44,36 @@ int gauss_cpu(double matrix[], double result[], int n)
 				}
 			}
 		}
-	}
+        */
 
-    ///////////////////////////
-    printf("\nThe matrix after Pivotisation is:\n");
-    for (i=0;i<n;i++)            //print the new matrix
-    {
-        for (j=0;j<=n;j++)
-            printf("%f\t",matrix[nvar*i+j]);
-        printf("\n");
-    }    
-    //////////////////////////
-
-	//loop to perform the gauss elimination
-	/*
-		i -> diagonal row
-		k -> rows below
-		j -> collumn
-	*/
-	for (i=0;i<n-1;i++)
-	{            
+        //Pivotisation non zero
+        if (abs(matrix[nvar * i + i]) < 1e-13)                 
+            for (k=i+1;k<n;k++)
+            {
+                if (abs(matrix[nvar * i + i]) < 1e-13)
+                {
+                    for (j=0;j<=n;j++)
+                    {
+                        double temp=matrix[nvar*i+j];
+                        matrix[nvar*i+j]=matrix[nvar*k+j];
+                        matrix[nvar*k+j]=temp;
+                    }
+                    break;
+                }
+            }
+        //loop to perform the gauss elimination
+        /*
+            i -> diagonal row
+            k -> rows below
+            j -> collumn
+        */
         for (k=i+1;k<n;k++)
 		{
 			double ratio=matrix[nvar*k+i]/matrix[nvar*i+i]; 
 			for (j=0;j<=n;j++)
 				matrix[nvar*k+j]=matrix[nvar*k+j]-ratio*matrix[nvar*i+j];    //make the elements below the pivot elements equal to zero or elimnate the variables
 		}
-	}
+	}	
     /////////////////////////////
      printf("\n\nThe matrix after gauss-elimination is as follows:\n");
      for (i=0;i<n;i++)            //print the new matrix
@@ -114,37 +118,21 @@ int gauss_cpu(double matrix[], double result[], int n)
 }
 
 //gauss elimination   CUDA kernel
-__global__ void gaussOnGPU(double matrix[], const int n)
+__global__ void gaussOnGPU(double matrix[], const int n, const int i)
 {
     unsigned int ix = threadIdx.x + blockIdx.x * blockDim.x;
     unsigned int iy = threadIdx.y + blockIdx.y * blockDim.y;
     unsigned int idx = iy * gridDim.x * blockDim.x + ix;
-    int i;
-    int NVAR = n + 1;
+    int line_size = n + 1;
 
-    int k = idx / NVAR; //line of matrix wich idx belongs
-    int j = idx % NVAR; //collumn of matrix wich idx belongs
+    int k = idx / line_size; //line of matrix wich idx belongs
+    k += 1;
+    int j = idx % line_size; //collumn of matrix wich idx belongs
 
-    if (idx < (gridDim.x * gridDim.y * blockDim.x * blockDim.y) && k < n && j <= n)
+    if (idx < (gridDim.x * gridDim.y * blockDim.x * blockDim.y)&& k < n - i && j <= n)  //miss k verification
     {
-        for (i=0;i<n-1;i++)
-        {   
-            /*         
-            for (k=i+1;k<n;k++)
-            {
-                double ratio=matrix[nvar*k+i]/matrix[nvar*i+i]; 
-                for (j=0;j<=n;j++)
-                    matrix[nvar*k+j]=matrix[nvar*k+j]-ratio*matrix[nvar*i+j];    //make the elements below the pivot elements equal to zero or elimnate the variables
-            }
-            */
-            
-            if(k > i) //compute if the k line is below of i line
-            {
-                double ratio = matrix[NVAR*k+i]/matrix[NVAR*i+i];
-                matrix[NVAR*k+j] = matrix[NVAR*k+j]-ratio*matrix[NVAR*i+j];       //make the elements below the pivot elements equal to zero or elimnate the variables
-            }
-            __syncthreads(); //Synchronizing all threads before next iteration 
-        }
+        double ratio = matrix[line_size*k+i]/matrix[i];
+        matrix[line_size*k+j] = matrix[line_size*k+j]-ratio*matrix[j];       //make the elements below the pivot elements equal to zero or elimnate the variables
     }
 }
 
@@ -191,6 +179,7 @@ int gauss_gpu(double matrix[], double result[], int n)
 {
     //setup device
     int dev = 0;
+    double *dev_matrix, *dev_result;
     cudaDeviceProp deviceProp;
 
     CHECK(cudaGetDeviceProperties(&deviceProp, dev));
@@ -209,92 +198,81 @@ int gauss_gpu(double matrix[], double result[], int n)
     int i,j,k;
     int nvar = n + 1;
     double* temp = (double*)calloc((size_t)(nvar+1), (size_t)(sizeof(double)));
-	//Pivotisation
-	for (i=0;i<n;i++)
-	{                    
-        for (k=i+1;k<n;k++)
-		{
-			if (matrix[nvar*i+i]<matrix[nvar*k+i])
-			{
-                mempcpy(temp, matrix+nvar*i, sizeof(double)*nvar);
-                mempcpy(matrix+nvar*i, matrix+nvar*k, sizeof(double)*nvar);
-                mempcpy(matrix+nvar*k, temp, sizeof(double)*nvar);
-			}
-		}
+	
+	for (i = 0; i < n - 1; i++)
+	{   
+        //Pivotisation
+        if (abs(matrix[nvar * i + i]) < 1e-13)                 
+            for (k=i+1;k<n;k++)
+            {
+                if (abs(matrix[nvar * i + i]) < 1e-13)
+                {
+                    mempcpy(temp, matrix+nvar*i, sizeof(double)*nvar);
+                    mempcpy(matrix+nvar*i, matrix+nvar*k, sizeof(double)*nvar);
+                    mempcpy(matrix+nvar*k, temp, sizeof(double)*nvar);
+                    break;
+                }
+            }
+        //gauss elimination
+        /*
+            i -> diagonal row
+            k -> rows below
+            j -> collumn
+        */
+
+         //device memory allocation
+        CHECK(cudaMalloc((void **)&dev_matrix, (matrix_size - i * nvar)));
+
+        // transfer data from host to device
+        CHECK(cudaMemcpy(dev_matrix, (matrix + i * nvar), (matrix_size - i * nvar), cudaMemcpyHostToDevice));
+
+        // device configurations
+        int block_x = n + 1;
+        int block_y = n - (i + 1); //only elements that need to be calculated
+
+        int grid_x = 1;
+        int grid_y = 1;
+
+        //block size verification
+        if(block_x > deviceProp.maxThreadsDim[0] || block_y > deviceProp.maxThreadsDim[1] || block_x * block_y > deviceProp.maxThreadsPerBlock)
+        {
+            fprintf(stderr,"Block too big\n");
+            exit(1);
+        }
+
+        //grid size verification
+        if(grid_x > deviceProp.maxGridSize[0] || grid_y > deviceProp.maxGridSize[1])
+        {
+            fprintf(stderr,"Grid too big\n");
+            exit(1);
+        }
+
+        dim3 block (block_x, block_y);
+        dim3 grid  (grid_x, grid_y);
+
+        //kernel execution
+        printf("\n i:%d gaussOnGPU<<<%d, %d>>>: block: %d x %d\n", i, grid.x * grid.y, block.x * block.y, block.x, block.y);
+        gaussOnGPU<<<grid, block>>>(dev_matrix, n, i);
+        CHECK(cudaGetLastError());
+        CHECK(cudaDeviceSynchronize());
+       
+
+        // transfer data from device to host
+        CHECK(cudaMemcpy((matrix + i * nvar), dev_matrix, (matrix_size - i * nvar), cudaMemcpyDeviceToHost));
+
+        //free device memory
+        CHECK(cudaFree(dev_matrix));
+
+        printf("\n\n i:%d  The matrix after gauss-elimination is as follows:\n", i);
+        int a, b;
+        for (a=0;a<n;a++)            //print the new matrix
+        {
+            for (b=0;b<=n;b++)
+                printf("%f\t",matrix[nvar*a+b]);
+            printf("\n");
+        }  
 	}
     free(temp);
-
-    ///////////////////////////
-    printf("\nThe matrix after Pivotisation is:\n");
-    for (i=0;i<n;i++)            //print the new matrix
-    {
-        for (j=0;j<=n;j++)
-            printf("%f\t",matrix[nvar*i+j]);
-        printf("\n");
-    }    
-    ////////////////////////////////
-	//gauss elimination
-	/*
-		i -> diagonal row
-		k -> rows below
-		j -> collumn
-	*/
-
-    /*
-	for (i=0;i<n-1;i++)
-	{            
-        for (k=i+1;k<n;k++)
-		{
-			double ratio=matrix[nvar*k+i]/matrix[nvar*i+i]; 
-			for (j=0;j<=n;j++)
-				matrix[nvar*k+j]=matrix[nvar*k+j]-ratio*matrix[nvar*i+j];    //make the elements below the pivot elements equal to zero or elimnate the variables
-		}
-	}
-    */   
-
-    //device memory allocation    
-    double *dev_matrix, *dev_result;
-    CHECK(cudaMalloc((void **)&dev_matrix, matrix_size));
-    CHECK(cudaMalloc((void **)&dev_result, result_size));
-
-    // transfer data from host to device
-    CHECK(cudaMemcpy(dev_matrix, matrix, matrix_size, cudaMemcpyHostToDevice));
-
-    // device configurations
-    int block_x = n + 1;
-    int block_y = n;
-
-    int grid_x = 1;
-    int grid_y = 1;
-
-    //block size verification
-    if(block_x > deviceProp.maxThreadsDim[0] || block_y > deviceProp.maxThreadsDim[1] || block_x * block_y > deviceProp.maxThreadsPerBlock)
-    {
-        fprintf(stderr,"Block too big\n");
-        exit(1);
-    }
-
-    //grid size verification
-    if(grid_x > deviceProp.maxGridSize[0] || grid_y > deviceProp.maxGridSize[1])
-    {
-        fprintf(stderr,"Grid too big\n");
-        exit(1);
-    }
-
-    dim3 block (block_x, block_y);
-    dim3 grid  (grid_x, grid_y);
-
-    //kernel execution
-    gaussOnGPU<<<grid, block>>>(dev_matrix, n);
-    CHECK(cudaGetLastError());
-    CHECK(cudaDeviceSynchronize());
-    printf("\ngaussOnGPU<<<%d, %d>>>: block: %d x %d\n", grid.x * grid.y, block.x * block.y, block.x, block.y);  
-
-    // transfer data from device to host
-    CHECK(cudaMemcpy(matrix, dev_matrix,matrix_size, cudaMemcpyDeviceToHost));
-
-    //free device memory
-    //CHECK(cudaFree(dev_matrix));
 
     /////////////////////////////
      printf("\n\nThe matrix after gauss-elimination is as follows:\n");
@@ -338,7 +316,8 @@ int gauss_gpu(double matrix[], double result[], int n)
     }
     
 /*
-    //device memory allocation
+    //device memory allocation    
+    CHECK(cudaMalloc((void **)&dev_result, result_size));
     //double *dev_matrix, *dev_result;
     //CHECK(cudaMalloc((void **)&dev_matrix, matrix_size));
     //CHECK(cudaMalloc((void **)&dev_result, result_size));
@@ -428,17 +407,18 @@ int read_file(const char* fileName,double* matrix, int* n)
 int verification(double* result_a, double* result_b, int n)
 {
     int i;
+    int error = 0;
     for(i = 0; i < n; i++)
     {
-        if(abs(result_a[i] - result_b[i]) > 1e-14)
-        {
-            printf("Result mismatch:\n");
+        if(abs(result_a[i] - result_b[i]) > 1e-13)
+        {   
+            if (error == 0)
+                printf("Result mismatch:\n");
             printf("i: %d\tCPU: %f\tGPU: %f    delta:%e", i, result_a[i], result_b[i], result_a[i]-result_b[i]);
-            return -1;
-        }
-            
+            error = -1;
+        }            
     }
-    return 0;
+    return error;
 }
 
 int main(int argc, char const *argv[])
