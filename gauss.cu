@@ -17,7 +17,14 @@
 #include <cuda_runtime.h>
 
 //cpu
-void gauss_cpu(double matrix[], double result[], int n)
+
+/////////////////////////////////
+// 0 -> independent system
+// 1 -> dependent system
+// 2 -> inconsistent system
+/////////////////////////////////
+
+int gauss_cpu(double matrix[], double result[], int n)
 {
 	int i,j,k;
     int nvar = n + 1;
@@ -73,6 +80,28 @@ void gauss_cpu(double matrix[], double result[], int n)
     }    
     ////////////////////////////
 
+    // type verification
+    int zero, type = 0;
+    for (i=n-1;i>=0;i--)
+    {
+        zero = 1;
+        for (j=0;j<n;j++)
+            if (abs(matrix[nvar*i+j]) > 1e-14)
+            {
+                zero = 0;
+                break;
+            }
+        if (zero == 1)
+        {
+            if(matrix[nvar*i+j] < 1e-14)
+                return 1;
+            else 
+                return 2;
+        }
+    }
+
+    ////////////////////////////////////////
+
 	for (i=n-1;i>=0;i--)                //back-substitution
     {                        
         result[i]=matrix[nvar*i+n];                //make the variable to be calculated equal to the rhs of the last equation
@@ -81,6 +110,7 @@ void gauss_cpu(double matrix[], double result[], int n)
                 result[i]=result[i]-matrix[nvar*i+j]*result[j];
         result[i]=result[i]/matrix[nvar*i+i];            //now finally divide the rhs by the coefficient of the variable to be calculated
     }
+    return 0;
 }
 
 //gauss elimination   CUDA kernel
@@ -119,7 +149,12 @@ __global__ void gaussOnGPU(double matrix[], const int n)
 }
 
 //GPU
-void gauss_gpu(double matrix[], double result[], int n)
+/////////////////////////////////
+// 0 -> independent system
+// 1 -> dependent system
+// 2 -> inconsistent system
+/////////////////////////////////
+int gauss_gpu(double matrix[], double result[], int n)
 {
     //setup device
     int dev = 0;
@@ -164,8 +199,8 @@ void gauss_gpu(double matrix[], double result[], int n)
             printf("%f\t",matrix[nvar*i+j]);
         printf("\n");
     }    
-
-	//loop to perform the gauss elimination
+    ////////////////////////////////
+	//gauss elimination
 	/*
 		i -> diagonal row
 		k -> rows below
@@ -237,6 +272,28 @@ void gauss_gpu(double matrix[], double result[], int n)
     }    
     ////////////////////////////
 
+    // type verification
+    int zero, type = 0;
+    for (i=n-1;i>=0;i--)
+    {
+        zero = 1;
+        for (j=0;j<n;j++)
+            if (abs(matrix[nvar*i+j]) > 1e-14)
+            {
+                zero = 0;
+                break;
+            }
+        if (zero == 1)
+        {
+            if(matrix[nvar*i+j] < 1e-14)
+                return 1;
+            else 
+                return 2;
+        }
+    }
+
+    ///////////////////////////////////
+
 	for (i=n-1;i>=0;i--)                //back-substitution
     {                        
         result[i]=matrix[nvar*i+n];                //make the variable to be calculated equal to the rhs of the last equation
@@ -245,6 +302,7 @@ void gauss_gpu(double matrix[], double result[], int n)
                 result[i]=result[i]-matrix[nvar*i+j]*result[j];
         result[i]=result[i]/matrix[nvar*i+i];            //now finally divide the rhs by the coefficient of the variable to be calculated
     }
+    return 0;
 
 }
 
@@ -276,16 +334,6 @@ int read_file(const char* fileName,double* matrix, int* n)
         if (!fscanf(file, "%lf", matrix +i )) 
             break;
     }
-    /*
-    for(int i = 0; i< nvar; i++)
-    {
-        for (int j = 0; j <= nvar; j++)
-        {
-            if (!fscanf(file, "%lf", &mat[(nvar+1) * i + j])) 
-                break;
-        }
-    }
-    */
     fclose(file);  
 
     *n = nvar;
@@ -297,7 +345,7 @@ int verification(double* result_a, double* result_b, int n)
     int i;
     for(i = 0; i < n; i++)
     {
-        if((result_a[i] - result_b[i]) > 1e-14)
+        if(abs(result_a[i] - result_b[i]) > 1e-14)
         {
             printf("Result mismatch:\n");
             printf("i: %d\tCPU: %f\tGPU: %f    delta:%e", i, result_a[i], result_b[i], result_a[i]-result_b[i]);
@@ -310,6 +358,7 @@ int verification(double* result_a, double* result_b, int n)
 
 int main(int argc, char const *argv[])
 {
+    int i,j;
     //read matrix from file
     if (argc != 3)
     {
@@ -328,9 +377,9 @@ int main(int argc, char const *argv[])
     printf("nvar: %d\n", nvar);
     
     printf("Initial matrix:\n\n");
-    for(int i = 0; i< nvar; i++)
+    for(i = 0; i< nvar; i++)
     {
-        for (int j = 0; j <= nvar; j++)
+        for (j = 0; j <= nvar; j++)
             printf("%.1f\t",matrix[(nvar+1) *i + j]); 
         printf("\n"); 
     }
@@ -339,12 +388,23 @@ int main(int argc, char const *argv[])
 	double result_a[nvar];
     double result_b[nvar];
 
-	gauss_cpu(matrix, result_a, nvar);
-    printf("\nThe values of the variables are as follows:\n");
-    int i;
-    for (i=0;i<nvar;i++)
-        printf("%f\n",result_a[i]); 
+    int type_a = 0, type_b = 0;
 
+	type_a = gauss_cpu(matrix, result_a, nvar);
+    if (type_a == 0)
+    {
+        printf("\nThe values of the variables are as follows:\n");
+        for (i=0;i<nvar;i++)
+            printf("%f\n",result_a[i]); 
+    }
+    else if(type_a == 1)
+    {
+        printf("\nThe system is dependent\n");
+    }
+    else if(type_a == 2)
+    {
+        printf("\nThe system is inconsistent\n");
+    }
     
     printf("\nGPU\n");
 
@@ -355,21 +415,34 @@ int main(int argc, char const *argv[])
     }
 
     gauss_gpu(matrix, result_b, nvar);
-    printf("\nThe values of the variables are as follows:\n");
-    //int i;
-    for (i=0;i<nvar;i++)
-        printf("%f\n",result_b[i]);   
-    
-    printf("\n***********************\n");
-    if (verification(result_a, result_b, nvar) != 0)
+    if (type_b == 0)
     {
-        /*printf("Result mismatch:\n");
-        for(i = 0; i < nvar; i++)
+        printf("\nThe values of the variables are as follows:\n");
+        for (i=0;i<nvar;i++)
+            printf("%f\n",result_b[i]);   
+    }
+    else if(type_b == 1)
+    {
+        printf("\nThe system is dependent\n");
+    }
+    else if(type_b == 2)
+    {
+        printf("\nThe system is inconsistent\n");
+    }
+
+    printf("\n***********************\n");
+    if (type_a == 0 && type_b == 0)
+    {
+        if (verification(result_a, result_b, nvar) != 0)
         {
-            printf("CPU: %f\tGPU: %f\n", result_a[i], result_b[i]);
-        }*/
-        free(matrix);
-	    return -1;
+            /*printf("Result mismatch:\n");
+            for(i = 0; i < nvar; i++)
+            {
+                printf("CPU: %f\tGPU: %f\n", result_a[i], result_b[i]);
+            }*/
+            free(matrix);
+            return -1;
+        }
     }
 
     printf("OK");
