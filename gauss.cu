@@ -5,7 +5,7 @@
 //  João Rodrigues
 //  MEC: 71771
 //
-//  back-substitution algorithm based on http://www.bragitoff.com/2015/09/c-program-for-gauss-elimination-for-solving-a-system-of-linear-equations/
+//  
 /////////////////////////////////////////////////////////////////////
 
 #include <stdio.h>
@@ -28,6 +28,7 @@ int gauss_cpu(double matrix[], double result[], int n)
 {
 	int i,j,k;
     int nvar = n + 1;
+    double tmp;
 	
 	for (i = 0; i < n - 1; i++)
 	{                    
@@ -106,14 +107,12 @@ int gauss_cpu(double matrix[], double result[], int n)
 
     ////////////////////////////////////////
 
-	for (i=n-1;i>=0;i--)                //back-substitution
-    {                        
-        result[i]=matrix[nvar*i+n];                //make the variable to be calculated equal to the rhs of the last equation
-        for (j=0;j<n;j++)
-            if (j!=i)            //then subtract all the lhs values except the coefficient of the variable whose value is being calculated
-                result[i]=result[i]-matrix[nvar*i+j]*result[j];
-        result[i]=result[i]/matrix[nvar*i+i];            //now finally divide the rhs by the coefficient of the variable to be calculated
-    }
+    for (i = n - 1; i >= 0; i--) {
+		tmp = matrix[nvar*i+n];
+		for (j = n - 1; j > i; j--)
+			tmp -= result[j] * matrix[nvar * i + j];
+        result[i] = tmp / matrix[nvar * i + i];
+	}
     return 0;
 }
 
@@ -129,45 +128,13 @@ __global__ void gaussOnGPU(double matrix[], const int n, const int i)
     k += 1;
     int j = idx % line_size; //collumn of matrix wich idx belongs
 
-    if (idx < (gridDim.x * gridDim.y * blockDim.x * blockDim.y)&& k < n - i && j <= n)  //miss k verification
+    if (idx < (gridDim.x * gridDim.y * blockDim.x * blockDim.y)&& k < n - i && j <= n)
     {
         double ratio = matrix[line_size*k+i]/matrix[i];
         matrix[line_size*k+j] = matrix[line_size*k+j]-ratio*matrix[j];       //make the elements below the pivot elements equal to zero or elimnate the variables
     }
 }
 
-__global__ void backSubstitutionOnGPU(double matrix[], double result[], const int n)  //PROBLEMS
-{
-    /*
-    for (i=n-1;i>=0;i--)                //back-substitution
-    {                        
-        result[i]=matrix[nvar*i+n];                //make the variable to be calculated equal to the rhs of the last equation
-        for (j=0;j<n;j++)
-            if (j!=i)            //then subtract all the lhs values except the coefficient of the variable whose value is being calculated
-                result[i]=result[i]-matrix[nvar*i+j]*result[j];
-        result[i]=result[i]/matrix[nvar*i+i];            //now finally divide the rhs by the coefficient of the variable to be calculated
-    }
-    */
-    unsigned int ix = threadIdx.x + blockIdx.x * blockDim.x;
-    unsigned int iy = threadIdx.y + blockIdx.y * blockDim.y;
-    unsigned int idx = iy * gridDim.x * blockDim.x + ix;
-    int i,j;
-    int NVAR = n + 1;
-
-    if (idx < (gridDim.x * gridDim.y * blockDim.x * blockDim.y) && idx < n)
-    {
-        result[idx] = matrix[NVAR * idx + n];
-        for(j=0;j<n;j++)
-        {
-            if (j != idx)
-            {
-                result[idx]=result[idx]-matrix[NVAR*idx+j]*result[j];
-            }
-            __syncthreads(); //Synchronizing all threads before next iteration
-        }
-        result[idx]=result[idx]/matrix[NVAR*idx+idx];
-    }
-}
 
 //GPU
 /////////////////////////////////
@@ -180,6 +147,7 @@ int gauss_gpu(double matrix[], double result[], int n)
     //setup device
     int dev = 0;
     double *dev_matrix, *dev_result;
+    double tmp;
     cudaDeviceProp deviceProp;
 
     CHECK(cudaGetDeviceProperties(&deviceProp, dev));
@@ -213,6 +181,7 @@ int gauss_gpu(double matrix[], double result[], int n)
                     break;
                 }
             }
+
         //gauss elimination
         /*
             i -> diagonal row
@@ -263,7 +232,7 @@ int gauss_gpu(double matrix[], double result[], int n)
         //free device memory
         CHECK(cudaFree(dev_matrix));
 
-        printf("\n\n i:%d  The matrix after gauss-elimination is as follows:\n", i);
+        printf("\n\n i:%d  The matrix in %d iteration:\n", i, i);
         int a, b;
         for (a=0;a<n;a++)            //print the new matrix
         {
@@ -306,66 +275,12 @@ int gauss_gpu(double matrix[], double result[], int n)
 
     ///////////////////////////////////
 
-	for (i=n-1;i>=0;i--)                //back-substitution
-    {                        
-        result[i]=matrix[nvar*i+n];                //make the variable to be calculated equal to the rhs of the last equation
-        for (j=0;j<n;j++)
-            if (j!=i)            //then subtract all the lhs values except the coefficient of the variable whose value is being calculated
-                result[i]=result[i]-matrix[nvar*i+j]*result[j];
-        result[i]=result[i]/matrix[nvar*i+i];            //now finally divide the rhs by the coefficient of the variable to be calculated
-    }
-    
-/*
-    //device memory allocation    
-    CHECK(cudaMalloc((void **)&dev_result, result_size));
-    //double *dev_matrix, *dev_result;
-    //CHECK(cudaMalloc((void **)&dev_matrix, matrix_size));
-    //CHECK(cudaMalloc((void **)&dev_result, result_size));
-
-     // transfer data from host to device
-    CHECK(cudaMemcpy(dev_matrix, matrix, matrix_size, cudaMemcpyHostToDevice));
-    CHECK(cudaMemcpy(dev_result, result, result_size, cudaMemcpyHostToDevice));
-
-    // device configurations
-    block_x = 1;
-    block_y = n;
-
-    grid_x = 1;
-    grid_y = 1;
-
-    //block size verification
-    if(block_x > deviceProp.maxThreadsDim[0] || block_y > deviceProp.maxThreadsDim[1] || block_x * block_y > deviceProp.maxThreadsPerBlock)
-    {
-        fprintf(stderr,"Block too big\n");
-        exit(1);
-    }
-
-    //grid size verification
-    if(grid_x > deviceProp.maxGridSize[0] || grid_y > deviceProp.maxGridSize[1])
-    {
-        fprintf(stderr,"Grid too big\n");
-        exit(1);
-    }
-
-    block.x = block_x;
-    block.y = block_y;
-    grid.x = grid.x;
-    grid.y = grid_y;
-
-    //kernel execution
-    backSubstitutionOnGPU<<<grid, block>>>(dev_matrix, dev_result, n);
-    CHECK(cudaGetLastError());
-    CHECK(cudaDeviceSynchronize());
-    printf("\nbackSubstitutionOnGPU<<<%d, %d>>>: block: %d x %d\n", grid.x * grid.y, block.x * block.y, block.x, block.y);
-
-    // transfer data from device to host
-    CHECK(cudaMemcpy(matrix, dev_matrix, matrix_size, cudaMemcpyDeviceToHost));
-    CHECK(cudaMemcpy(result, dev_result, result_size, cudaMemcpyDeviceToHost));
-
-    //free device memory
-    CHECK(cudaFree(dev_matrix));
-    CHECK(cudaFree(dev_result));
-*/
+	for (i = n - 1; i >= 0; i--) {  //back substitution
+		tmp = matrix[nvar*i+n];
+		for (j = n - 1; j > i; j--)
+			tmp -= result[j] * matrix[nvar * i + j];
+        result[i] = tmp / matrix[nvar * i + i];
+	}
     return 0;
 
 }
@@ -414,7 +329,7 @@ int verification(double* result_a, double* result_b, int n)
         {   
             if (error == 0)
                 printf("Result mismatch:\n");
-            printf("i: %d\tCPU: %f\tGPU: %f    delta:%e", i, result_a[i], result_b[i], result_a[i]-result_b[i]);
+            printf("i: %d\tCPU: %f\tGPU: %f    delta:%e\n", i, result_a[i], result_b[i], result_a[i]-result_b[i]);
             error = -1;
         }            
     }
