@@ -5,7 +5,7 @@
 //  João Rodrigues
 //  MEC: 71771
 //
-//  
+//  algorithm based on: https://rosettacode.org/wiki/Gaussian_elimination#C
 /////////////////////////////////////////////////////////////////////
 
 #include <stdio.h>
