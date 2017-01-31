@@ -73,6 +73,8 @@ int gauss_cpu(double matrix[], double result[], int n)
 			double ratio=matrix[nvar*k+i]/matrix[nvar*i+i]; 
 			for (j=0;j<=n;j++)
 				matrix[nvar*k+j]=matrix[nvar*k+j]-ratio*matrix[nvar*i+j];    //make the elements below the pivot elements equal to zero or elimnate the variables
+                if(abs(matrix[nvar*k+j]) < 1e-13)
+                    matrix[nvar*k+j] = 0.0;
 		}
 	}	
     /////////////////////////////
@@ -91,19 +93,21 @@ int gauss_cpu(double matrix[], double result[], int n)
     {
         zero = 1;
         for (j=0;j<n;j++)
-            if (abs(matrix[nvar*i+j]) > 1e-14)
+            if (abs(matrix[nvar*i+j]) > 1e-13)
             {
                 zero = 0;
                 break;
             }
         if (zero == 1)
         {
-            if(matrix[nvar*i+j] < 1e-14)
-                return 1;
+            if(matrix[nvar*i+j] < 1e-13)
+                type = 1;
             else 
                 return 2;
         }
     }
+    if (type == 1)
+        return 1;
 
     ////////////////////////////////////////
 
@@ -117,7 +121,20 @@ int gauss_cpu(double matrix[], double result[], int n)
 }
 
 //gauss elimination   CUDA kernel
-__global__ void gaussOnGPU(double matrix[], const int n, const int i)
+__global__ void ratioOnGPU(double matrix[], double ratio[], const int n, const int i)
+{
+    unsigned int ix = threadIdx.x + blockIdx.x * blockDim.x;
+    unsigned int iy = threadIdx.y + blockIdx.y * blockDim.y;
+    unsigned int idx = iy * gridDim.x * blockDim.x + ix;
+    int line_size = n + 1;
+
+    if (idx < (gridDim.x * gridDim.y * blockDim.x * blockDim.y)&& idx <= n - i)
+    {
+        ratio[idx] = matrix[line_size*(idx+1)+i]/matrix[i];
+    }
+}
+
+__global__ void gaussOnGPU(double matrix[], double ratio[], const int n, const int i)
 {
     unsigned int ix = threadIdx.x + blockIdx.x * blockDim.x;
     unsigned int iy = threadIdx.y + blockIdx.y * blockDim.y;
@@ -130,10 +147,13 @@ __global__ void gaussOnGPU(double matrix[], const int n, const int i)
 
     if (idx < (gridDim.x * gridDim.y * blockDim.x * blockDim.y)&& k < n - i && j <= n)
     {
-        double ratio = matrix[line_size*k+i]/matrix[i];
-        matrix[line_size*k+j] = matrix[line_size*k+j]-ratio*matrix[j];       //make the elements below the pivot elements equal to zero or elimnate the variables
+        matrix[line_size*k+j] = matrix[line_size*k+j]-ratio[k-1]*matrix[j];       //make the elements below the pivot elements equal to zero or elimnate the variables
+        if(abs(matrix[line_size*k+j]) < 1e-13)
+            matrix[line_size*k+j] = 0.0;
     }
 }
+
+
 
 
 //GPU
@@ -146,7 +166,7 @@ int gauss_gpu(double matrix[], double result[], int n)
 {
     //setup device
     int dev = 0;
-    double *dev_matrix, *dev_result;
+    double *dev_matrix, *dev_ratio;
     double tmp;
     cudaDeviceProp deviceProp;
 
@@ -191,12 +211,13 @@ int gauss_gpu(double matrix[], double result[], int n)
 
          //device memory allocation
         CHECK(cudaMalloc((void **)&dev_matrix, (matrix_size - i * nvar)));
+        CHECK(cudaMalloc((void **)&dev_ratio, (n - (i + 1))));
 
         // transfer data from host to device
         CHECK(cudaMemcpy(dev_matrix, (matrix + i * nvar), (matrix_size - i * nvar), cudaMemcpyHostToDevice));
 
         // device configurations
-        int block_x = n + 1;
+        int block_x = 1;
         int block_y = n - (i + 1); //only elements that need to be calculated
 
         int grid_x = 1;
@@ -220,8 +241,35 @@ int gauss_gpu(double matrix[], double result[], int n)
         dim3 grid  (grid_x, grid_y);
 
         //kernel execution
+        printf("\n i:%d ratioOnGPU<<<%d, %d>>>: block: %d x %d\n", i, grid.x * grid.y, block.x * block.y, block.x, block.y);
+        ratioOnGPU<<<grid, block>>>(dev_matrix, dev_ratio, n, i);
+        CHECK(cudaGetLastError());
+        CHECK(cudaDeviceSynchronize());
+
+        //device configurations
+        block.x = n + 1;
+        block.y = n - (i + 1); //only elements that need to be calculated
+
+        grid.x = 1;
+        grid.y = 1;
+
+        //block size verification
+        if(block.x > deviceProp.maxThreadsDim[0] || block.y > deviceProp.maxThreadsDim[1] || block.x * block.y > deviceProp.maxThreadsPerBlock)
+        {
+            fprintf(stderr,"Block too big\n");
+            exit(1);
+        }
+
+        //grid size verification
+        if(grid.x > deviceProp.maxGridSize[0] || grid.y > deviceProp.maxGridSize[1])
+        {
+            fprintf(stderr,"Grid too big\n");
+            exit(1);
+        }
+
+        //kernel execution
         printf("\n i:%d gaussOnGPU<<<%d, %d>>>: block: %d x %d\n", i, grid.x * grid.y, block.x * block.y, block.x, block.y);
-        gaussOnGPU<<<grid, block>>>(dev_matrix, n, i);
+        gaussOnGPU<<<grid, block>>>(dev_matrix, dev_ratio, n, i);
         CHECK(cudaGetLastError());
         CHECK(cudaDeviceSynchronize());
        
@@ -231,6 +279,7 @@ int gauss_gpu(double matrix[], double result[], int n)
 
         //free device memory
         CHECK(cudaFree(dev_matrix));
+        CHECK(cudaFree(dev_ratio));
 
         printf("\n\n i:%d  The matrix in %d iteration:\n", i, i);
         int a, b;
@@ -259,19 +308,21 @@ int gauss_gpu(double matrix[], double result[], int n)
     {
         zero = 1;
         for (j=0;j<n;j++)
-            if (abs(matrix[nvar*i+j]) > 1e-14)
+            if (abs(matrix[nvar*i+j]) > 1e-13)
             {
                 zero = 0;
                 break;
             }
         if (zero == 1)
         {
-            if(matrix[nvar*i+j] < 1e-14)
-                return 1;
+            if(matrix[nvar*i+j] < 1e-13)
+                type = 1;
             else 
                 return 2;
         }
     }
+    if (type == 1)
+        return 1;
 
     ///////////////////////////////////
 
@@ -303,7 +354,7 @@ int read_file(const char* fileName,double* matrix, int* n)
         return -1;
     }
 
-    int i,j;
+    int i;
 
     /*matrix*/
 
@@ -329,7 +380,7 @@ int verification(double* result_a, double* result_b, int n)
         {   
             if (error == 0)
                 printf("Result mismatch:\n");
-            printf("i: %d\tCPU: %f\tGPU: %f    delta:%e\n", i, result_a[i], result_b[i], result_a[i]-result_b[i]);
+            printf("i: %d\tCPU: %f\tGPU: %f    delta:%e\n", i, result_a[i], result_b[i], abs(result_a[i]-result_b[i]));
             error = -1;
         }            
     }
